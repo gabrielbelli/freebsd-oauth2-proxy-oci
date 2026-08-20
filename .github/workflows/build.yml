@@ -18,6 +18,13 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/oauth2-proxy-freebsd
   FREEBSD_VERSION: '15.1'
+  # Not a performance knob. With the overlay driver, buildah leaves overlayfs
+  # bookkeeping attributes (user.overlay.impure, user.overlay.origin) on any
+  # directory the COPY merges into. user.overlay.origin has an EMPTY value, and
+  # podman on FreeBSD indexes value[0] when applying it, so the pull panics:
+  #   ExtattrSetLink ... index out of range [0] with length 0
+  # vfs produces no such attributes. Verified against podman 5.8.4 on FreeBSD 15.1.
+  STORAGE_DRIVER: vfs
 
 jobs:
   build:
@@ -76,6 +83,36 @@ jobs:
             --annotation "org.opencontainers.image.licenses=MIT" \
             -t "localhost/build:${{ matrix.arch }}" \
             -f Containerfile .
+
+      # The architecture check above proves the binary is right. This proves the
+      # layer is applyable on the target OS, which is a different failure: the
+      # first published image passed every other check and still panicked podman
+      # on FreeBSD the moment it was pulled.
+      - name: Check the layer carries no FreeBSD-hostile xattrs
+        run: |
+          rm -rf /tmp/imgdir
+          buildah push "localhost/build:${{ matrix.arch }}" "dir:/tmp/imgdir"
+          python3 - <<'PY'
+          import glob, tarfile, sys
+          bad = []
+          for path in glob.glob('/tmp/imgdir/*'):
+              try:
+                  tf = tarfile.open(path)
+              except Exception:
+                  continue          # config/manifest json, not a layer
+              for member in tf.getmembers():
+                  for key, value in member.pax_headers.items():
+                      if 'xattr' not in key.lower():
+                          continue
+                      if len(value) == 0 or '.overlay.' in key:
+                          bad.append(f'{member.name}: {key}={value!r}')
+          if bad:
+              print('Layer carries xattrs that break podman on FreeBSD:')
+              for b in bad[:20]:
+                  print('  ', b)
+              sys.exit(1)
+          print('layer xattrs: clean')
+          PY
 
       - name: Log in to the registry
         if: github.event_name != 'pull_request'
