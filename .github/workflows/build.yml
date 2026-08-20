@@ -1,6 +1,6 @@
 name: build
 
-# Builds on ordinary Linux runners. The image contains FreeBSD binaries, but
+# Builds on ordinary Linux runners. The images contain FreeBSD binaries, but
 # nothing FreeBSD ever executes during the build — see the Containerfile.
 on:
   push:
@@ -9,7 +9,7 @@ on:
   pull_request:
   # FreeBSD rebuilds every Go port when the toolchain moves, roughly
   # fortnightly, without the application version changing. A weekly build picks
-  # those up; without it the image would sit on a stale Go runtime.
+  # those up, and also refreshes the -current image, whose base snapshot moves.
   schedule:
     - cron: '0 6 * * 1'
   workflow_dispatch:
@@ -17,13 +17,8 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/oauth2-proxy-freebsd
-  # The base release the default tags are built from. A second variant is built
-  # from 15.0 as well — see the matrix. FreeBSD supports older userland on a
-  # newer kernel, never the reverse, so a 15.1-based image is not guaranteed to
-  # run on a 15.0 kernel: 15.1 added four syscalls (kexec_load, pdrfork, pdwait,
-  # renameat2) that a 15.0 kernel does not have. Nothing here is likely to call
-  # them, but "unlikely" is not a property you want in an auth proxy.
-  DEFAULT_BASE: '15.1'
+  # Which base the unsuffixed tags (:latest, :<version>) point at.
+  DEFAULT_SLUG: freebsd15.1
   # Not a performance knob. With the overlay driver, buildah leaves overlayfs
   # bookkeeping attributes (user.overlay.impure, user.overlay.origin) on any
   # directory the COPY merges into. user.overlay.origin has an EMPTY value, and
@@ -40,20 +35,20 @@ jobs:
       packages: write
     strategy:
       fail-fast: false
+      # One entry per (base release, architecture). The package ABI tracks the
+      # base's major version — a 14.x image must take its package from the
+      # FreeBSD:14 repo, not FreeBSD:15 — so abi is spelled out rather than
+      # derived. Supported releases as of 2026-08-20, plus CURRENT.
       matrix:
-        arch: [amd64, arm64]
-        base: ['15.1', '15.0']
         include:
-          - arch: amd64
-            abi: FreeBSD:15:amd64
-          - arch: arm64
-            abi: FreeBSD:15:aarch64
-    outputs:
-      # Both architectures resolve the same package version, so whichever
-      # matrix job reports last is fine. If they ever disagreed — a repository
-      # mid-sync — the manifest job's `add` would not find the other tag and
-      # the build would fail rather than publish a mismatched pair.
-      version: ${{ steps.stage.outputs.version }}
+          - { slug: freebsd15.1,      base: '15.1',    arch: amd64, abi: 'FreeBSD:15:amd64'   }
+          - { slug: freebsd15.1,      base: '15.1',    arch: arm64, abi: 'FreeBSD:15:aarch64' }
+          - { slug: freebsd15.0,      base: '15.0',    arch: amd64, abi: 'FreeBSD:15:amd64'   }
+          - { slug: freebsd15.0,      base: '15.0',    arch: arm64, abi: 'FreeBSD:15:aarch64' }
+          - { slug: freebsd14.4,      base: '14.4',    arch: amd64, abi: 'FreeBSD:14:amd64'   }
+          - { slug: freebsd14.4,      base: '14.4',    arch: arm64, abi: 'FreeBSD:14:aarch64' }
+          - { slug: freebsd16-current, base: '16.snap', arch: amd64, abi: 'FreeBSD:16:amd64'   }
+          - { slug: freebsd16-current, base: '16.snap', arch: arm64, abi: 'FreeBSD:16:aarch64' }
     steps:
       - uses: actions/checkout@v5
 
@@ -88,8 +83,9 @@ jobs:
             --build-arg ROOTFS=rootfs \
             --annotation "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
             --annotation "org.opencontainers.image.version=${{ steps.stage.outputs.version }}" \
+            --annotation "org.opencontainers.image.base.name=docker.io/freebsd/freebsd-runtime:${{ matrix.base }}" \
             --annotation "org.opencontainers.image.licenses=MIT" \
-            -t "localhost/build:${{ matrix.base }}-${{ matrix.arch }}" \
+            -t "localhost/build:${{ matrix.slug }}-${{ matrix.arch }}" \
             -f Containerfile .
 
       # The architecture check above proves the binary is right. This proves the
@@ -99,7 +95,7 @@ jobs:
       - name: Check the layer carries no FreeBSD-hostile xattrs
         run: |
           rm -rf /tmp/imgdir
-          buildah push "localhost/build:${{ matrix.base }}-${{ matrix.arch }}" "dir:/tmp/imgdir"
+          buildah push "localhost/build:${{ matrix.slug }}-${{ matrix.arch }}" "dir:/tmp/imgdir"
           python3 - <<'PY'
           import glob, tarfile, sys
           bad = []
@@ -124,17 +120,30 @@ jobs:
 
       - name: Log in to the registry
         if: github.event_name != 'pull_request'
-        run: |
-          buildah login -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}" "${REGISTRY}"
+        run: buildah login -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}" "${REGISTRY}"
 
-      # Per-architecture tags. The multi-arch tag is assembled in the next job,
-      # because a manifest list can only be built once both exist.
+      # Per-architecture tags carry the version actually resolved for THIS
+      # (base, arch). They genuinely differ: at the time of writing, aarch64 sat
+      # at 7.15.3_1 on FreeBSD:14 and FreeBSD:16 while amd64 was on 7.15.3_2.
       - name: Push
         if: github.event_name != 'pull_request'
         run: |
           dest="${REGISTRY}/${IMAGE_NAME}"
-          buildah push "localhost/build:${{ matrix.base }}-${{ matrix.arch }}" \
-            "docker://${dest}:${{ steps.stage.outputs.version }}-freebsd${{ matrix.base }}-${{ matrix.arch }}"
+          buildah push "localhost/build:${{ matrix.slug }}-${{ matrix.arch }}" \
+            "docker://${dest}:${{ steps.stage.outputs.version }}-${{ matrix.slug }}-${{ matrix.arch }}"
+
+      # The manifest job discovers what to assemble from these, so the matrix
+      # above is the only place the target list is written down.
+      - name: Record what this job produced
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p out
+          echo "${{ steps.stage.outputs.version }}" > "out/${{ matrix.slug }}__${{ matrix.arch }}"
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: built-${{ matrix.slug }}-${{ matrix.arch }}
+          path: out/
 
   manifest:
     needs: build
@@ -149,35 +158,59 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y buildah
 
+      - uses: actions/download-artifact@v4
+        with:
+          path: built
+          merge-multiple: true
+
       - name: Log in to the registry
         run: buildah login -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}" "${REGISTRY}"
 
       - name: Assemble the multi-architecture tags
-        env:
-          VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -eu
           dest="${REGISTRY}/${IMAGE_NAME}"
+          slugs=$(ls built | sed 's/__.*//' | sort -u)
+          echo "bases built: $slugs"
 
-          # One multi-arch tag per base release: :<pkgver>-freebsd15.1 and
-          # :<pkgver>-freebsd15.0. Pick the one matching your host's kernel.
-          for base in 15.1 15.0; do
-            m="${VERSION}-freebsd${base}"
+          for slug in $slugs; do
+            m="manifest-${slug}"
             buildah manifest create "$m"
+            same=yes; first=""
             for arch in amd64 arm64; do
-              buildah manifest add "$m" "docker://${dest}:${m}-${arch}"
+              f="built/${slug}__${arch}"
+              if [ ! -f "$f" ]; then
+                echo "NOTE: ${slug} has no ${arch} build; its manifest will not include ${arch}"
+                same=no
+                continue
+              fi
+              v=$(cat "$f")
+              buildah manifest add "$m" "docker://${dest}:${v}-${slug}-${arch}"
+              [ -z "$first" ] && first="$v" || { [ "$v" = "$first" ] || same=no; }
             done
-            buildah manifest push --all "$m" "docker://${dest}:${m}"
-          done
 
-          # The unsuffixed tags track DEFAULT_BASE, so existing references keep
-          # meaning what they meant.
-          d="${VERSION}-freebsd${DEFAULT_BASE}"
-          buildah manifest push --all "$d" "docker://${dest}:${VERSION}"
-          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
-            buildah manifest push --all "$d" "docker://${dest}:latest"
-          fi
-          case "${GITHUB_REF}" in
-            refs/tags/*)
-              buildah manifest push --all "$d" "docker://${dest}:${GITHUB_REF#refs/tags/}" ;;
-          esac
+            # Moving tag, always published: :freebsd15.1, :freebsd14.4, ...
+            buildah manifest push --all "$m" "docker://${dest}:${slug}"
+
+            # Version-stamped multi-arch tag only when every architecture really
+            # is that version. Otherwise the tag would name a version that one
+            # of its own members is not, so it is skipped and said out loud.
+            if [ "$same" = yes ]; then
+              buildah manifest push --all "$m" "docker://${dest}:${first}-${slug}"
+            else
+              echo "SKIP :<version>-${slug} — architectures differ in package version"
+              for arch in amd64 arm64; do
+                [ -f "built/${slug}__${arch}" ] && echo "    ${arch}=$(cat "built/${slug}__${arch}")"
+              done
+            fi
+
+            if [ "$slug" = "${DEFAULT_SLUG}" ]; then
+              if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+                buildah manifest push --all "$m" "docker://${dest}:latest"
+              fi
+              [ "$same" = yes ] && buildah manifest push --all "$m" "docker://${dest}:${first}"
+              case "$GITHUB_REF" in
+                refs/tags/*) buildah manifest push --all "$m" "docker://${dest}:${GITHUB_REF#refs/tags/}" ;;
+              esac
+            fi
+          done
