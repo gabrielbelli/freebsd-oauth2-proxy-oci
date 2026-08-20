@@ -20,9 +20,12 @@ to install the port into every jail by hand or run a Linux VM. This publishes
 the FreeBSD package as an image instead: the same `pkg` bits the ports tree
 ships, in a form `podman` can pull.
 
-The image is the base runtime plus one static Go binary — no shell needed to
-run it, no package manager at run time, no dependencies (the port declares
-neither `RUN_DEPENDS` nor `LIB_DEPENDS`).
+The image is the base runtime plus one program. The port declares neither
+`RUN_DEPENDS` nor `LIB_DEPENDS`, so no other package is pulled in.
+
+The binary is **not** static, despite being Go — it links against `libc.so.7`
+and `libthr.so.3` through `/libexec/ld-elf.so.1`. Those come from the base
+runtime, which is why this image cannot be `FROM scratch`.
 
 ## It builds on Linux, without FreeBSD
 
@@ -212,10 +215,25 @@ FreeBSD 15.1 host with podman 5.8.4 and the `ocijail` runtime, pulling
 | `/oauth2/sign_in` | `200`, 8485 bytes, renders the Google button |
 | Both published layers | no zero-length or `overlay.*` xattrs |
 
-Not run: the `arm64` image, for want of an arm64 FreeBSD host — it is verified
-only as a correct FreeBSD aarch64 ELF in a valid manifest entry. A full OIDC
-round trip is also untested, since it needs live provider credentials;
-everything up to the redirect is confirmed.
+The `arm64` image was exercised on the same amd64 host through
+`qemu-user-static` and `binmiscctl`, the mechanism poudriere uses for
+cross-building:
+
+| Check | Result |
+|---|---|
+| `podman pull --arch arm64` | clean |
+| Filesystem inside the arm64 image | correct — `oauth2-proxy`, 26,000,440 bytes |
+| A non-Go aarch64 binary (`/bin/echo`) | **runs** under emulation |
+| `oauth2-proxy` itself under emulation | `SIGILL` |
+
+The `SIGILL` is qemu's limit, not the image's: `emulators/qemu-user-static` is
+pinned at **3.1.0**, a 2018 build, while this binary is Go 1.26 aarch64. The
+control binary from the same image running correctly is what separates the two.
+So the arm64 image is verified as far as an amd64 host can verify it, and the
+`oauth2-proxy` binary itself has still never executed on real arm64 hardware.
+
+A full OIDC round trip is also untested, since it needs live provider
+credentials; everything up to the redirect is confirmed.
 
 ## Licence
 

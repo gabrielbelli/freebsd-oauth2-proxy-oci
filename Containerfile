@@ -14,8 +14,12 @@ ARG FREEBSD_VERSION=15.1
 FROM freebsd/freebsd-runtime:${FREEBSD_VERSION}
 
 # Staged by fetch-pkg.sh: the contents of the www/oauth2-proxy package, minus
-# pkg's own metadata. oauth2-proxy is a static Go binary and the port declares
-# no run or library dependencies, so this really is base plus one program.
+# pkg's own metadata. The port declares no RUN_DEPENDS and no LIB_DEPENDS, so
+# no other package has to be fetched.
+#
+# The binary is NOT static, despite being Go: it is dynamically linked against
+# libc.so.7 and libthr.so.3 with interpreter /libexec/ld-elf.so.1. All three
+# come from the base runtime below, which is why this cannot be FROM scratch.
 ARG ROOTFS=rootfs
 COPY ${ROOTFS}/ /
 
