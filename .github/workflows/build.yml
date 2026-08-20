@@ -40,7 +40,7 @@ jobs:
       # the build would fail rather than publish a mismatched pair.
       version: ${{ steps.stage.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install buildah
         run: |
