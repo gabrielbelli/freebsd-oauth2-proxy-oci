@@ -1,0 +1,5 @@
+# Staged package contents — fetched at build time, never committed.
+rootfs/
+rootfs-*/
+*.version
+*.pkg

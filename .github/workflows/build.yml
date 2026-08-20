@@ -1,0 +1,130 @@
+name: build
+
+# Builds on ordinary Linux runners. The image contains FreeBSD binaries, but
+# nothing FreeBSD ever executes during the build — see the Containerfile.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  # FreeBSD rebuilds every Go port when the toolchain moves, roughly
+  # fortnightly, without the application version changing. A weekly build picks
+  # those up; without it the image would sit on a stale Go runtime.
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/oauth2-proxy-freebsd
+  FREEBSD_VERSION: '15.1'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            abi: FreeBSD:15:amd64
+          - arch: arm64
+            abi: FreeBSD:15:aarch64
+    outputs:
+      # Both architectures resolve the same package version, so whichever
+      # matrix job reports last is fine. If they ever disagreed — a repository
+      # mid-sync — the manifest job's `add` would not find the other tag and
+      # the build would fail rather than publish a mismatched pair.
+      version: ${{ steps.stage.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install buildah
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y buildah
+
+      - name: Stage the FreeBSD package
+        id: stage
+        run: |
+          ./fetch-pkg.sh "${{ matrix.abi }}" oauth2-proxy rootfs
+          echo "version=$(cat rootfs.version)" >> "$GITHUB_OUTPUT"
+
+      # Cheap proof that the staged tree is the architecture we asked for. A
+      # silent mismatch would produce an image that only fails at run time, on
+      # somebody else's machine.
+      - name: Check the binary's architecture
+        run: |
+          file rootfs/usr/local/bin/oauth2-proxy
+          case "${{ matrix.arch }}" in
+            amd64) file rootfs/usr/local/bin/oauth2-proxy | grep -q 'x86-64' ;;
+            arm64) file rootfs/usr/local/bin/oauth2-proxy | grep -q 'aarch64' ;;
+          esac
+          file rootfs/usr/local/bin/oauth2-proxy | grep -q 'FreeBSD'
+
+      - name: Build
+        run: |
+          buildah bud \
+            --platform "freebsd/${{ matrix.arch }}" \
+            --build-arg "FREEBSD_VERSION=${FREEBSD_VERSION}" \
+            --build-arg ROOTFS=rootfs \
+            --annotation "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --annotation "org.opencontainers.image.version=${{ steps.stage.outputs.version }}" \
+            --annotation "org.opencontainers.image.licenses=MIT" \
+            -t "localhost/build:${{ matrix.arch }}" \
+            -f Containerfile .
+
+      - name: Log in to the registry
+        if: github.event_name != 'pull_request'
+        run: |
+          buildah login -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}" "${REGISTRY}"
+
+      # Per-architecture tags. The multi-arch tag is assembled in the next job,
+      # because a manifest list can only be built once both exist.
+      - name: Push
+        if: github.event_name != 'pull_request'
+        run: |
+          dest="${REGISTRY}/${IMAGE_NAME}"
+          buildah push "localhost/build:${{ matrix.arch }}" \
+            "docker://${dest}:${{ steps.stage.outputs.version }}-${{ matrix.arch }}"
+
+  manifest:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Install buildah
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y buildah
+
+      - name: Log in to the registry
+        run: buildah login -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}" "${REGISTRY}"
+
+      - name: Assemble the multi-architecture tags
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -eu
+          dest="${REGISTRY}/${IMAGE_NAME}"
+          buildah manifest create "${VERSION}"
+          for arch in amd64 arm64; do
+            buildah manifest add "${VERSION}" "docker://${dest}:${VERSION}-${arch}"
+          done
+          buildah manifest push --all "${VERSION}" "docker://${dest}:${VERSION}"
+
+          # `latest` follows the default branch only. A tag build additionally
+          # publishes its own git tag, so a pinned reference stays pinned.
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            buildah manifest push --all "${VERSION}" "docker://${dest}:latest"
+          fi
+          case "${GITHUB_REF}" in
+            refs/tags/*)
+              buildah manifest push --all "${VERSION}" "docker://${dest}:${GITHUB_REF#refs/tags/}" ;;
+          esac
