@@ -12,11 +12,13 @@ Multi-architecture: `freebsd/amd64` and `freebsd/arm64`.
 
 ## Why
 
-FreeBSD 14.2 added OCI-image support to `podman`, and jails can now run images
-directly. The upstream oauth2-proxy images are Linux-only, so a FreeBSD host
-either has to install the port into every jail by hand or run a Linux VM. This
-publishes the FreeBSD package as an image instead: the same `pkg` bits the
-ports tree ships, in a form `podman` can pull.
+The FreeBSD project began publishing OCI-compatible container images in 14.2
+(*"The FreeBSD project is now publishing OCI-compatible container images"* —
+14.2 release notes; the `freebsd/freebsd-runtime` tag list starts there too).
+The upstream oauth2-proxy images are Linux-only, so a FreeBSD host either has
+to install the port into every jail by hand or run a Linux VM. This publishes
+the FreeBSD package as an image instead: the same `pkg` bits the ports tree
+ships, in a form `podman` can pull.
 
 The image is the base runtime plus one static Go binary — no shell needed to
 run it, no package manager at run time, no dependencies (the port declares
@@ -65,9 +67,15 @@ Two things the script refuses to paper over:
 buildah bud --platform freebsd/amd64 -t oauth2-proxy-freebsd .
 ```
 
-`docker buildx build --platform freebsd/amd64 ...` works too — verified on
-macOS, producing an image whose config reads `Os=freebsd`, 22 MB over two
-layers. Needs `curl`, `tar` and `python3` besides the builder.
+`docker buildx build --platform freebsd/amd64 ...` works too. Either way you
+need `curl`, `tar` and `python3` besides the builder.
+
+Published sizes, two layers each (base runtime + this package):
+
+| | compressed | `oauth2-proxy` binary |
+|---|---|---|
+| `freebsd/amd64` | 21 MB | 28,195,896 bytes |
+| `freebsd/arm64` | 19 MB | 26,000,440 bytes |
 
 ## Running it
 
@@ -184,9 +192,30 @@ moves — the application version does not change, but the binary does, and thos
 rebuilds are usually where a Go runtime security fix arrives. CI rebuilds
 weekly for the same reason.
 
-Port health, as of the last check: `www/oauth2-proxy` tracked upstream 7.15.1
-and 7.15.2 within **three days** each, and 7.15.3 within 24 days. It is
-currently level with upstream.
+Port health, checked 2026-08-20: `www/oauth2-proxy` tracked upstream 7.15.1
+and 7.15.2 within **three days** each, and 7.15.3 within 24 days. It was level
+with upstream at that point.
+
+## What has actually been run
+
+Claims here are from running the image, not from reading documentation. On a
+FreeBSD 15.1 host with podman 5.8.4 and the `ocijail` runtime, pulling
+`:latest` fresh with no cache:
+
+| Check | Result |
+|---|---|
+| `podman pull` | clean — no layer-apply errors |
+| Process user | `www` (uid 80, confirmed against `/etc/passwd`) |
+| `--version` | `oauth2-proxy 7.15.3 (built with go1.26.6)` |
+| `/ping` | `200 OK`, no authentication |
+| `/oauth2/auth` without a cookie | `401` |
+| `/oauth2/sign_in` | `200`, 8485 bytes, renders the Google button |
+| Both published layers | no zero-length or `overlay.*` xattrs |
+
+Not run: the `arm64` image, for want of an arm64 FreeBSD host — it is verified
+only as a correct FreeBSD aarch64 ELF in a valid manifest entry. A full OIDC
+round trip is also untested, since it needs live provider credentials;
+everything up to the redirect is confirmed.
 
 ## Licence
 
