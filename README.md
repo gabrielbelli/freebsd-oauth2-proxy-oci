@@ -123,6 +123,20 @@ line — `podman inspect` and the process table both show arguments.
 The container runs as `www` (uid 80), the same account the FreeBSD rc script
 uses, and listens on 4180.
 
+### Health checking
+
+The image deliberately carries no built-in healthcheck: the OCI image spec has
+no field for one, so anything declared in the Containerfile is dropped on
+publish. Pass it at run time:
+
+```sh
+podman run --health-cmd "/usr/bin/fetch -qo /dev/null http://127.0.0.1:4180/ping" \
+           --health-interval 30s --health-retries 3 ...
+```
+
+`/ping` answers 200 without authentication, and `fetch(1)` is already in the
+base image.
+
 ## Tags and updates
 
 | Tag | Meaning |
