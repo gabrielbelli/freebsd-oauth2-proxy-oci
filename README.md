@@ -187,7 +187,6 @@ Read the note above about when this actually runs.
 |---|---|
 | `latest` | Newest build from `main`, on the default base (15.1). |
 | `freebsd15.1` `freebsd15.0` `freebsd14.4` | Moving tag per base release, multi-arch. Always published. |
-| `freebsd16-current` | Built on a **CURRENT** snapshot. Moving, unsupported, for testing. |
 | `7.15.3_2-freebsd15.1` | Version-stamped, multi-arch. Published only when every architecture is on that version. |
 | `7.15.3_2-freebsd15.1-amd64` | One architecture, exact package version. Always published. |
 
@@ -202,9 +201,10 @@ kernel is the unsupported direction:
 | 15.1 or newer release | `latest` or `freebsd15.1` |
 | 15.0 | `freebsd15.0` |
 | 14.4 | `freebsd14.4` |
-| 16.x-CURRENT | `freebsd16-current` |
 
-Covers every FreeBSD release under support as of 2026-08-20, plus CURRENT.
+Covers every FreeBSD release under support as of 2026-08-20. CURRENT is not
+built: its base image and packages both move on their own, so the tag would
+rot between the times anyone looked at it.
 
 ### Why some version-stamped tags are missing
 
@@ -218,13 +218,6 @@ arm64 image inside it. So the version-stamped multi-arch tag is published only
 when the architectures agree, and the build log says which ones were skipped
 and why. The moving tag (`freebsd14.4`) and the per-architecture tags, which
 carry each architecture's real version, are always published.
-
-### A note on `freebsd16-current`
-
-CURRENT is a development branch. Its base image is a snapshot that moves, its
-packages move, and neither carries a support commitment. The tag exists so you
-can test against what is coming; do not put it in front of anything you care
-about.
 
 The version tag carries the package revision (`_2`) deliberately. FreeBSD's Go
 team bumps `PORTREVISION` and rebuilds every Go port whenever the toolchain

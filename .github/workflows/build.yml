@@ -9,7 +9,7 @@ on:
   pull_request:
   # FreeBSD rebuilds every Go port when the toolchain moves, roughly
   # fortnightly, without the application version changing. A weekly build picks
-  # those up, and also refreshes the -current image, whose base snapshot moves.
+  # those up; without it the images would sit on a stale Go runtime.
   schedule:
     - cron: '0 6 * * 1'
   workflow_dispatch:
@@ -38,7 +38,12 @@ jobs:
       # One entry per (base release, architecture). The package ABI tracks the
       # base's major version — a 14.x image must take its package from the
       # FreeBSD:14 repo, not FreeBSD:15 — so abi is spelled out rather than
-      # derived. Supported releases as of 2026-08-20, plus CURRENT.
+      # derived. Supported releases as of 2026-08-20.
+      #
+      # CURRENT is deliberately absent. Its base image and packages both move on
+      # their own, so a weekly job would keep republishing a tag nobody watches,
+      # against a branch carrying no support commitment. Add an entry here if you
+      # ever want to test against it.
       matrix:
         include:
           - { slug: freebsd15.1,      base: '15.1',    arch: amd64, abi: 'FreeBSD:15:amd64'   }
@@ -47,8 +52,6 @@ jobs:
           - { slug: freebsd15.0,      base: '15.0',    arch: arm64, abi: 'FreeBSD:15:aarch64' }
           - { slug: freebsd14.4,      base: '14.4',    arch: amd64, abi: 'FreeBSD:14:amd64'   }
           - { slug: freebsd14.4,      base: '14.4',    arch: arm64, abi: 'FreeBSD:14:aarch64' }
-          - { slug: freebsd16-current, base: '16.snap', arch: amd64, abi: 'FreeBSD:16:amd64'   }
-          - { slug: freebsd16-current, base: '16.snap', arch: arm64, abi: 'FreeBSD:16:aarch64' }
     steps:
       - uses: actions/checkout@v5
 
