@@ -109,7 +109,9 @@ different hostname needs a second instance.
 ### Configuration file instead of flags
 
 The package's sample config is at `/usr/local/etc/oauth2-proxy.cfg.sample`
-inside the image. Mount your own and pass `--config`:
+inside the image (mode 0600, owned by root — it is a reference, not something
+the `www` user reads). Mount your own and make sure uid 80 can read it, then
+pass `--config`:
 
 ```sh
 podman run -d -p 4180:4180 \
@@ -123,19 +125,50 @@ line — `podman inspect` and the process table both show arguments.
 The container runs as `www` (uid 80), the same account the FreeBSD rc script
 uses, and listens on 4180.
 
-### Health checking
+## How FreeBSD differs from the Linux podman you are used to
 
-The image deliberately carries no built-in healthcheck: the OCI image spec has
-no field for one, so anything declared in the Containerfile is dropped on
-publish. Pass it at run time:
+Three behaviours differ, all verified on podman 5.8.4 / FreeBSD 15.1. None are
+faults in the image; they change how you operate it.
+
+**Healthchecks never fire on their own.** The image carries no `HEALTHCHECK` —
+the OCI image spec has no field for one, so buildah drops the instruction on
+publish. More importantly, passing `--health-cmd` at run time does not help by
+itself: podman schedules periodic healthchecks with *systemd timers*, which
+FreeBSD does not have, so the status sits at `starting` forever and the health
+log stays empty. Running one by hand works:
 
 ```sh
-podman run --health-cmd "/usr/bin/fetch -qo /dev/null http://127.0.0.1:4180/ping" \
-           --health-interval 30s --health-retries 3 ...
+podman healthcheck run oauth2-proxy   # exit 0 when healthy
 ```
 
-`/ping` answers 200 without authentication, and `fetch(1)` is already in the
-base image.
+So either have your reverse proxy check `/ping` directly — it answers 200
+without authentication — or drive `podman healthcheck run` from cron.
+
+**`--restart=always` is a boot-time policy, not live supervision.** There is no
+persistent podman daemon on FreeBSD. Kill a container and it stays exited; the
+policy is applied by the rc service, which replays it at boot:
+
+```sh
+sysrc podman_enable=YES
+```
+
+Verified both ways: `podman kill` left it exited with `RestartCount=0`, while
+`service podman restart` brought it back serving. If you need a crashed
+container revived promptly, supervise it yourself.
+
+**Container networking wants `pf`.** The default bridge network fails with
+*"The pf kernel module must be loaded to support ipMasq networks"*. For a
+forward-auth proxy `--network=host` is simpler and avoids NAT entirely.
+
+## Health checking
+
+`/ping` answers 200 without authentication, and `fetch(1)` is in the base image:
+
+```sh
+podman run --health-cmd "/usr/bin/fetch -qo /dev/null http://127.0.0.1:4180/ping" ...
+```
+
+Read the note above about when this actually runs.
 
 ## Tags and updates
 
