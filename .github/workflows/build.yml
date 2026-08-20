@@ -17,7 +17,13 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/oauth2-proxy-freebsd
-  FREEBSD_VERSION: '15.1'
+  # The base release the default tags are built from. A second variant is built
+  # from 15.0 as well — see the matrix. FreeBSD supports older userland on a
+  # newer kernel, never the reverse, so a 15.1-based image is not guaranteed to
+  # run on a 15.0 kernel: 15.1 added four syscalls (kexec_load, pdrfork, pdwait,
+  # renameat2) that a 15.0 kernel does not have. Nothing here is likely to call
+  # them, but "unlikely" is not a property you want in an auth proxy.
+  DEFAULT_BASE: '15.1'
   # Not a performance knob. With the overlay driver, buildah leaves overlayfs
   # bookkeeping attributes (user.overlay.impure, user.overlay.origin) on any
   # directory the COPY merges into. user.overlay.origin has an EMPTY value, and
@@ -35,6 +41,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        arch: [amd64, arm64]
+        base: ['15.1', '15.0']
         include:
           - arch: amd64
             abi: FreeBSD:15:amd64
@@ -76,12 +84,12 @@ jobs:
         run: |
           buildah bud \
             --platform "freebsd/${{ matrix.arch }}" \
-            --build-arg "FREEBSD_VERSION=${FREEBSD_VERSION}" \
+            --build-arg "FREEBSD_VERSION=${{ matrix.base }}" \
             --build-arg ROOTFS=rootfs \
             --annotation "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
             --annotation "org.opencontainers.image.version=${{ steps.stage.outputs.version }}" \
             --annotation "org.opencontainers.image.licenses=MIT" \
-            -t "localhost/build:${{ matrix.arch }}" \
+            -t "localhost/build:${{ matrix.base }}-${{ matrix.arch }}" \
             -f Containerfile .
 
       # The architecture check above proves the binary is right. This proves the
@@ -91,7 +99,7 @@ jobs:
       - name: Check the layer carries no FreeBSD-hostile xattrs
         run: |
           rm -rf /tmp/imgdir
-          buildah push "localhost/build:${{ matrix.arch }}" "dir:/tmp/imgdir"
+          buildah push "localhost/build:${{ matrix.base }}-${{ matrix.arch }}" "dir:/tmp/imgdir"
           python3 - <<'PY'
           import glob, tarfile, sys
           bad = []
@@ -125,8 +133,8 @@ jobs:
         if: github.event_name != 'pull_request'
         run: |
           dest="${REGISTRY}/${IMAGE_NAME}"
-          buildah push "localhost/build:${{ matrix.arch }}" \
-            "docker://${dest}:${{ steps.stage.outputs.version }}-${{ matrix.arch }}"
+          buildah push "localhost/build:${{ matrix.base }}-${{ matrix.arch }}" \
+            "docker://${dest}:${{ steps.stage.outputs.version }}-freebsd${{ matrix.base }}-${{ matrix.arch }}"
 
   manifest:
     needs: build
@@ -150,18 +158,26 @@ jobs:
         run: |
           set -eu
           dest="${REGISTRY}/${IMAGE_NAME}"
-          buildah manifest create "${VERSION}"
-          for arch in amd64 arm64; do
-            buildah manifest add "${VERSION}" "docker://${dest}:${VERSION}-${arch}"
-          done
-          buildah manifest push --all "${VERSION}" "docker://${dest}:${VERSION}"
 
-          # `latest` follows the default branch only. A tag build additionally
-          # publishes its own git tag, so a pinned reference stays pinned.
+          # One multi-arch tag per base release: :<pkgver>-freebsd15.1 and
+          # :<pkgver>-freebsd15.0. Pick the one matching your host's kernel.
+          for base in 15.1 15.0; do
+            m="${VERSION}-freebsd${base}"
+            buildah manifest create "$m"
+            for arch in amd64 arm64; do
+              buildah manifest add "$m" "docker://${dest}:${m}-${arch}"
+            done
+            buildah manifest push --all "$m" "docker://${dest}:${m}"
+          done
+
+          # The unsuffixed tags track DEFAULT_BASE, so existing references keep
+          # meaning what they meant.
+          d="${VERSION}-freebsd${DEFAULT_BASE}"
+          buildah manifest push --all "$d" "docker://${dest}:${VERSION}"
           if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
-            buildah manifest push --all "${VERSION}" "docker://${dest}:latest"
+            buildah manifest push --all "$d" "docker://${dest}:latest"
           fi
           case "${GITHUB_REF}" in
             refs/tags/*)
-              buildah manifest push --all "${VERSION}" "docker://${dest}:${GITHUB_REF#refs/tags/}" ;;
+              buildah manifest push --all "$d" "docker://${dest}:${GITHUB_REF#refs/tags/}" ;;
           esac

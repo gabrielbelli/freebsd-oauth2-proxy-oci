@@ -185,9 +185,27 @@ Read the note above about when this actually runs.
 
 | Tag | Meaning |
 |---|---|
-| `latest` | Newest build from `main`. |
+| `latest` | Newest build from `main`, on the default base (15.1). |
 | `7.15.3_2` | The exact FreeBSD package version, including `PORTREVISION`. |
-| `7.15.3_2-amd64` | Single-architecture image, if you need to pin one. |
+| `7.15.3_2-freebsd15.1` | Explicit base release, multi-arch. |
+| `7.15.3_2-freebsd15.0` | Same package, built on the 15.0 base. |
+| `7.15.3_2-freebsd15.1-amd64` | Single architecture, if you need to pin one. |
+
+### Which tag for your host
+
+Match the tag to your **kernel**, with `freebsd-version -k`. FreeBSD runs older
+userland on a newer kernel, never the reverse:
+
+| Host kernel | Use |
+|---|---|
+| 15.1 or newer | `latest` / `…-freebsd15.1` |
+| 15.0 | `…-freebsd15.0` |
+| 14.x | neither — no image is built on a 14.x base yet |
+
+A 15.1-based image on a 15.0 kernel would very likely work: the only syscalls
+15.1 adds are `kexec_load` (unimplemented), `pdrfork`, `pdwait` and
+`renameat2`, none of which a Go HTTP proxy calls. The 15.0 tag exists so you do
+not have to rely on that reasoning for something sitting in the auth path.
 
 The version tag carries the package revision (`_2`) deliberately. FreeBSD's Go
 team bumps `PORTREVISION` and rebuilds every Go port whenever the toolchain
