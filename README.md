@@ -86,6 +86,19 @@ The image sets no configuration. Every flag is oauth2-proxy's own, so
 [upstream's documentation](https://oauth2-proxy.github.io/oauth2-proxy/)
 applies unchanged.
 
+### Deploying on FreeBSD, step by step
+
+[docs/freebsd-podman.md](docs/freebsd-podman.md) walks the whole thing: packages,
+why every example uses host networking, picking the tag for your kernel, keeping
+secrets out of `podman inspect`, and a table of symptoms with their causes.
+
+Examples:
+
+| File | For |
+|---|---|
+| [`examples/oauth2-proxy.pod.yaml`](examples/oauth2-proxy.pod.yaml) | the gateway itself, as a podman pod |
+| [`examples/forward-auth.nginx.conf`](examples/forward-auth.nginx.conf) | an application consuming the gateway |
+
 ### A ready-made pod manifest
 
 [`examples/oauth2-proxy.pod.yaml`](examples/oauth2-proxy.pod.yaml) is a complete
