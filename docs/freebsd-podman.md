@@ -32,12 +32,47 @@ The mapping from compose, if that is the shape in your head:
 | `network_mode: host` | `spec.hostNetwork: true` |
 | `restart: always` | `spec.restartPolicy: always` |
 
-## 1. Packages
+## 0. Use sh, not csh
+
+root's login shell on FreeBSD is `csh`, which does not understand `$( )`,
+`VAR=value command`, or `2>/dev/null`. Several commands below use them. Start
+every session with:
+
+```sh
+sh
+```
+
+Skipping this produces errors that look like the command is missing rather than
+the shell being wrong — `Command not found`, `Ambiguous output redirect`,
+`Bad : modifier`.
+
+## 1. Packages and layout
 
 ```sh
 pkg install -y podman ocijail catatonit
 sysrc podman_enable=YES
 ```
+
+Put the manifest and its secrets under `/usr/local/etc/<app>/`, which is where
+`hier(7)` says third-party configuration belongs and what the `www/oauth2-proxy`
+port itself uses:
+
+```
+/usr/local/etc/oauth2-proxy/
+├── oauth2-proxy.pod.yaml
+└── secrets/
+    ├── client-id
+    ├── client-secret
+    └── cookie-secret
+```
+
+```sh
+install -d -m 0755 /usr/local/etc/oauth2-proxy
+install -d -m 0700 -o www /usr/local/etc/oauth2-proxy/secrets
+```
+
+Configuration and secrets stay together, and `/usr/local/etc` is already in
+whatever backs this host up.
 
 `ocijail` is the OCI runtime podman uses on FreeBSD — the equivalent of `runc`.
 
@@ -71,6 +106,19 @@ If something else on the host already manages `pf`, do not enable it to suit
 podman. Use host networking.
 
 ## 3. Pick the image tag
+
+Check what you got, and do not be surprised if the Go version moves:
+
+```sh
+podman pull ghcr.io/gabrielbelli/oauth2-proxy-freebsd:freebsd15.0
+podman run --rm --network=host ghcr.io/gabrielbelli/oauth2-proxy-freebsd:freebsd15.0 --version
+```
+
+FreeBSD's Go team rebuilds every Go port when the toolchain moves, bumping
+`PORTREVISION` without the application version changing. These images rebuild
+weekly for exactly that reason, so `7.15.3` may report `go1.26.6` one week and
+`go1.26.7` the next. The application is the same; the runtime underneath it is
+newer, and that is usually where a Go security fix arrives.
 
 Match the tag to the host **kernel**:
 
@@ -201,6 +249,7 @@ authentication — or drive `podman healthcheck run` from cron.
 
 | Symptom | Cause |
 |---|---|
+| `create: Command not found` or similar on a line from this guide | you are in `csh`; run `sh` first (step 0) |
 | `finding catatonit binary` | `pkg install catatonit` (step 1) |
 | `The pf kernel module must be loaded` | not using `hostNetwork: true` (step 2) |
 | Container exits, logs mention the cookie secret | not exactly 16, 24 or 32 bytes (step 4) |
