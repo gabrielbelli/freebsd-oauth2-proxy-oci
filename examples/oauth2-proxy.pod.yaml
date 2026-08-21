@@ -1,0 +1,89 @@
+# A shared oauth2-proxy for a FreeBSD host, as a podman pod.
+#
+#   pkg install -y podman ocijail catatonit
+#   podman kube play  examples/oauth2-proxy.pod.yaml
+#   podman kube down  examples/oauth2-proxy.pod.yaml
+#
+# catatonit is required by `podman kube play` and podman does not depend on it.
+# Without it: finding catatonit binary: exec: "catatonit": executable file not found.
+#
+# This runs ONE gateway serving many applications, in both of its modes at once:
+#
+#   forward-auth   applications on their own subdomains keep serving themselves
+#                  and ask this proxy per request, at /oauth2/auth
+#   full proxy     applications mounted under a path here, via --upstream
+#
+# Both work in a single instance. /oauth2/auth is served whether or not any
+# upstream is configured, so one process covers both patterns — and one OAuth
+# client, and one redirect URI, cover every application behind it.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: oauth2-proxy
+spec:
+  # podman's bridge network on FreeBSD needs the pf kernel module for NAT.
+  # Host networking avoids that entirely.
+  hostNetwork: true
+  restartPolicy: always
+
+  volumes:
+    - name: secrets
+      hostPath:
+        path: /usr/local/etc/oauth2-proxy/secrets
+        type: Directory
+
+  containers:
+    - name: oauth2-proxy
+      # Match the tag to the host KERNEL: freebsd-version -k. FreeBSD runs older
+      # userland on a newer kernel, never the reverse.
+      image: ghcr.io/gabrielbelli/oauth2-proxy-freebsd:freebsd15.0
+      args:
+        - --provider=google
+        - --http-address=127.0.0.1:4180
+
+        # One redirect URI, registered once with the identity provider. Every
+        # application behind this gateway uses it; the provider never sees the
+        # per-application hostnames.
+        - --redirect-url=https://blueteam.example.com/oauth2/callback
+
+        # What makes it single sign-on: the session cookie is scoped to the
+        # shared parent, so one sign-in covers every host under it. Applications
+        # on a DIFFERENT registrable domain cannot share this cookie and need
+        # their own instance and their own OAuth client.
+        - --cookie-domain=.example.com
+        # Must permit the same, or the ?rd= back to an application is refused as
+        # an open redirect and sign-in dead-ends here. Verified: an rd= to a
+        # sibling subdomain survives into the state parameter; a foreign one is
+        # replaced with "/".
+        - --whitelist-domain=.example.com
+
+        # Required for the forward-auth half: nginx reads the identity from the
+        # X-Auth-Request-* headers this adds to the /oauth2/auth response.
+        - --set-xauthrequest
+        - --reverse-proxy
+        # Not optional in practice. On its own --reverse-proxy trusts EVERY
+        # connecting IP to supply X-Forwarded-*, and a reverse proxy in front
+        # typically builds its sign-in redirect from those headers. Set this to
+        # the address of whatever fronts this, and nothing else.
+        - --trusted-proxy-ip=127.0.0.0/8
+
+        # Who gets in. Use exactly one of these two — they are OR'd, so setting
+        # both means the domain admits everyone and the list buys nothing.
+        - --email-domain=example.com
+        # - --authenticated-emails-file=/run/secrets/allowed-emails.txt
+
+        # Full-proxy mode: one flag per path-mounted application. The
+        # application must support being served under that prefix, or its pages
+        # load and its assets 404. Where it cannot, give it a subdomain and use
+        # forward-auth instead.
+        # - --upstream=http://127.0.0.1:9001/toolx/
+
+        # Auth-only. Remove this when any --upstream above is enabled.
+        - --upstream=static://202
+
+      env:
+        - { name: OAUTH2_PROXY_CLIENT_ID_FILE,     value: /run/secrets/client-id }
+        - { name: OAUTH2_PROXY_CLIENT_SECRET_FILE, value: /run/secrets/client-secret }
+        - { name: OAUTH2_PROXY_COOKIE_SECRET_FILE, value: /run/secrets/cookie-secret }
+      volumeMounts:
+        - { name: secrets, mountPath: /run/secrets, readOnly: true }

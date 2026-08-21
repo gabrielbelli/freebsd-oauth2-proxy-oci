@@ -86,6 +86,39 @@ The image sets no configuration. Every flag is oauth2-proxy's own, so
 [upstream's documentation](https://oauth2-proxy.github.io/oauth2-proxy/)
 applies unchanged.
 
+### A ready-made pod manifest
+
+[`examples/oauth2-proxy.pod.yaml`](examples/oauth2-proxy.pod.yaml) is a complete
+deployment for a FreeBSD host, with the reasoning for each flag inline:
+
+```sh
+pkg install -y podman ocijail catatonit
+podman kube play examples/oauth2-proxy.pod.yaml
+```
+
+`podman-compose` is not packaged for FreeBSD and `podman compose` needs an
+external provider, so `podman kube play` is the built-in route. It needs
+`sysutils/catatonit`, which podman does not depend on — omit it and you get
+`finding catatonit binary: exec: "catatonit": executable file not found`, which
+names a binary most people have never heard of.
+
+### One instance can serve both modes
+
+Worth knowing before you plan a deployment: `/oauth2/auth` is served whether or
+not any `--upstream` is configured. So a single instance can answer forward-auth
+for applications on their own subdomains *and* proxy path-mounted applications
+at the same time — one process, one OAuth client, one redirect URI, however many
+applications.
+
+Verified against this image: with an `--upstream` mapped to a path,
+`/oauth2/auth` still returns `401`, the path still gates and proxies, and
+`--whitelist-domain` keeps an `rd=` to a sibling subdomain while replacing a
+foreign one with `/`.
+
+The limit is the **cookie domain**. Single sign-on comes from a session cookie
+scoped to a shared parent, so applications under one registrable domain can
+share an instance and applications on a different one cannot.
+
 ### Forward-auth (nginx `auth_request`)
 
 nginx keeps serving the application and asks the proxy, per request, whether
