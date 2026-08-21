@@ -265,16 +265,47 @@ authentication.
 | Sign-in works, application refuses the redirect | the application's host is outside `--whitelist-domain` |
 | `502` only for signed-in users | the proxy in front needs a larger header buffer; the session cookie carries the ID token |
 | `exec: No such file or directory` on a binary that exists | a directory above it is not traversable by `www` |
+| `502` from the gateway, backend container not running | the backend image failed to pull — check `podman logs`; a private registry the host has no credentials for fails this way |
+| `Address family for host not supported` between services | container-name DNS does not exist on FreeBSD podman; use a pod, or `network_mode: host` and `127.0.0.1` |
 | A path-mounted backend is never reached | `static://202` is listed before it; the catch-all must be last |
 | An allow-list edit is ignored | your editor replaced the file rather than writing in place, breaking the watch |
 
-## Why there is no compose file
+## Compose, and why this guide uses a pod manifest
 
-`podman-compose` is not packaged for FreeBSD, and `podman compose` only shims
-out to a provider that is not packaged either. `podman kube play` is built in.
+Both compose implementations are packaged and both work:
 
-It is lighter than the word "Kubernetes" suggests: one `kind: Pod`, a list of
-containers, a list of volumes. No Deployment, no Service, no cluster. You are
+```sh
+pkg install -y py312-podman-compose        # sysutils/podman-compose
+```
+
+`docker compose` also works, and additionally needs podman's API socket
+running.
+
+The reason this guide uses `podman kube play` anyway is not packaging — it is
+**DNS**. FreeBSD podman has no container-name resolution: `netavark` is not in
+the ports tree, and `aardvark-dns` pairs with netavark rather than CNI. A
+compose service therefore cannot reach a sibling by name, and you get:
+
+```
+Address family for host not supported
+```
+
+Containers in a **pod** share a network namespace, so `127.0.0.1` works between
+them and the problem does not arise. That is the whole argument.
+
+If you prefer compose, it works — put `network_mode: host` on every service and
+address siblings on `127.0.0.1`, which gets you the same property by a
+different route.
+
+> An earlier version of this page said podman-compose was not packaged for
+> FreeBSD. That was wrong; the package is named `py312-podman-compose` and a
+> search for `podman-compose` does not match it. The mistake, and the DNS
+> finding that actually matters, are documented in
+> [oci-jails](https://github.com/gabrielbelli/oci-jails), which tested all
+> three methods on FreeBSD 15.1.
+
+It is also lighter than the word "Kubernetes" suggests: one `kind: Pod`, a list
+of containers, a list of volumes. No Deployment, no Service, no cluster. You are
 using the file format, not the orchestrator.
 
 | compose | pod manifest |
