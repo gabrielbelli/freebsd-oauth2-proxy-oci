@@ -154,6 +154,29 @@ A refused user authenticates at the provider and is then rejected here — the
 log shows `[AuthFailure] Invalid authentication via OAuth2: unauthorized` and
 the browser gets a 403 at the callback. That is the allow-list working.
 
+**Changing the list needs no restart.** The file is watched; the start-up log
+says so:
+
+```
+[watcher.go:40] watching '/run/secrets/allowed-emails.txt' for updates
+```
+
+```sh
+echo 'newperson@example.com' >> /usr/local/etc/oauth2-proxy/secrets/allowed-emails.txt
+```
+
+Two things that surprise people:
+
+**Removing someone does not sign them out.** The list is checked when a session
+is created, not on every request, so an existing session survives until the
+cookie expires — 168 hours by default. To evict someone immediately, rotate the
+cookie secret and restart; that invalidates every session, including yours.
+
+**Some editors break the watch.** An editor that writes a new file and renames
+it over the old one leaves the watch pointing at an inode nobody uses any more.
+`echo >>`, `vi` and `ee` write in place and are fine. If an edit is ever
+ignored, that is why — restart once and carry on.
+
 ## Two ways to put an application behind it
 
 One instance does both at once. `/oauth2/auth` is served whether or not any
@@ -181,6 +204,27 @@ Add one `--upstream` per backend; routing is by path:
 
 `https://auth.example.com/toolx/` now reaches `127.0.0.1:9001`, gated. The
 backend receives the identity in `X-Forwarded-User` and `X-Forwarded-Email`.
+
+**Order matters, and `static://202` goes last.** Routing is by path, so a
+catch-all placed first swallows every request and no backend is ever reached.
+Confirm after restarting:
+
+```sh
+podman logs oauth2-proxy-oauth2-proxy | grep mapping
+```
+
+```
+mapping path "/toolx/" => upstream "http://127.0.0.1:9001/toolx/"
+mapping path "/"       => static response 202
+```
+
+**Unlike the allow-list, this needs a restart** — upstreams are read once at
+start-up:
+
+```sh
+podman pod rm -f oauth2-proxy
+podman kube play /usr/local/etc/oauth2-proxy/oauth2-proxy.pod.yaml
+```
 
 **The application must support being served under that prefix.** It sees
 `/toolx/...` and must build its own links, redirects and asset URLs with it.
@@ -221,6 +265,8 @@ authentication.
 | Sign-in works, application refuses the redirect | the application's host is outside `--whitelist-domain` |
 | `502` only for signed-in users | the proxy in front needs a larger header buffer; the session cookie carries the ID token |
 | `exec: No such file or directory` on a binary that exists | a directory above it is not traversable by `www` |
+| A path-mounted backend is never reached | `static://202` is listed before it; the catch-all must be last |
+| An allow-list edit is ignored | your editor replaced the file rather than writing in place, breaking the watch |
 
 ## Why there is no compose file
 
