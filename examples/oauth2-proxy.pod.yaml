@@ -39,6 +39,14 @@ spec:
       image: ghcr.io/gabrielbelli/oauth2-proxy-freebsd:freebsd15.0
       args:
         - --provider=google
+        # There is no --client-id-file: oauth2-proxy has --client-secret-file
+        # and --cookie-secret-file but not one for the ID, because the ID is
+        # not a secret — it is sent to the provider in the redirect the browser
+        # follows. Setting OAUTH2_PROXY_CLIENT_ID_FILE silently does nothing and
+        # the proxy exits with "provider missing setting: client-id".
+        - --client-id=YOUR_CLIENT_ID
+        - --client-secret-file=/run/secrets/client-secret
+        - --cookie-secret-file=/run/secrets/cookie-secret
         - --http-address=127.0.0.1:4180
 
         # One redirect URI, registered once with the identity provider. Every
@@ -81,9 +89,5 @@ spec:
         # Auth-only. Remove this when any --upstream above is enabled.
         - --upstream=static://202
 
-      env:
-        - { name: OAUTH2_PROXY_CLIENT_ID_FILE,     value: /run/secrets/client-id }
-        - { name: OAUTH2_PROXY_CLIENT_SECRET_FILE, value: /run/secrets/client-secret }
-        - { name: OAUTH2_PROXY_COOKIE_SECRET_FILE, value: /run/secrets/cookie-secret }
       volumeMounts:
         - { name: secrets, mountPath: /run/secrets, readOnly: true }
